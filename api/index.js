@@ -1,10 +1,7 @@
-import fetch from 'node-fetch';
-
 const AGNES_BASE = "https://apihub.agnes-ai.com/v1";
 const AGNES_KEY = process.env.AGNES_KEY;
 
 export default async function handler(req, res) {
-  // 处理拉取模型列表，解决拉取模型报错
   if(req.method === "GET" && req.url.startsWith("/v1/models")){
     return res.status(200).json({
       object: "list",
@@ -32,7 +29,6 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "缺少图片链接 image_url" });
     }
 
-    // 直接转发原图，不再用sharp处理图片！
     const agnesPayload = {
       model: model,
       prompt: prompt,
