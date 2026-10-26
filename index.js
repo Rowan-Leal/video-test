@@ -1,16 +1,24 @@
 import fetch from 'node-fetch';
-import { createClient } from '@supabase/supabase-js';
-import sharp from 'sharp';
 
 const AGNES_BASE = "https://apihub.agnes-ai.com/v1";
-const SUPABASE_URL = "https://uhochttjkenwtnelvzkg.supabase.co";
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const AGNES_KEY = process.env.AGNES_KEY;
-const BUCKET_NAME = "nuojiji-images";
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 export default async function handler(req, res) {
+  // 处理拉取模型列表，解决拉取模型报错
+  if(req.method === "GET" && req.url.startsWith("/v1/models")){
+    return res.status(200).json({
+      object: "list",
+      data: [
+        {
+          id: "agnes-video-2.5-flash",
+          object: "model",
+          created: 1700000000,
+          owned_by: "agnes"
+        }
+      ]
+    })
+  }
+
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
@@ -24,45 +32,11 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "缺少图片链接 image_url" });
     }
 
-    // 1. 下载原图
-    const imgResp = await fetch(imageUrl);
-    const rawBuffer = Buffer.from(await imgResp.arrayBuffer());
-
-    // 2. Sharp自动裁切+填充到 Agnes 要求：720×1280（9:16竖屏）
-    const processedBuffer = await sharp(rawBuffer)
-      .resize({
-        width:720,
-        height:1280,
-        fit:"contain",
-        background:{r:0,g:0,b:0,alpha:0}
-      })
-      .toBuffer();
-
-    // 3. 生成随机文件名，上传到你的supabase图床
-    const fileName = `proxy_${Date.now()}_${Math.random().toString(36).slice(2)}.png`;
-    const { error: uploadErr } = await supabase
-      .storage
-      .from(BUCKET_NAME)
-      .upload(fileName, processedBuffer, {
-        contentType:"image/png",
-        upsert:false
-      });
-    if(uploadErr){
-      return res.status(400).json({error:"Supabase上传失败",detail:uploadErr});
-    }
-
-    // 4. 获取公开直链（给Agnes调用）
-    const { data: urlData } = supabase
-      .storage
-      .from(BUCKET_NAME)
-      .getPublicUrl(fileName);
-    const fixedImgUrl = urlData.publicUrl;
-
-    // 5. 转发给Agnes生成视频
+    // 直接转发原图，不再用sharp处理图片！
     const agnesPayload = {
       model: model,
       prompt: prompt,
-      image_url: fixedImgUrl,
+      image_url: imageUrl,
       aspect_ratio: "9:16"
     };
     const agnesRes = await fetch(`${AGNES_BASE}/video/generations`, {
@@ -77,6 +51,7 @@ export default async function handler(req, res) {
     return res.status(agnesRes.status).json(result);
 
   } catch (err) {
+    console.error(err);
     return res.status(500).json({ error: "中转服务异常", msg: err.message });
   }
 }
