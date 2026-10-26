@@ -82,8 +82,8 @@ function pickRatio(b) {
       let best = "16:9", diff = 99;
       for (const k of RATIOS) {
         const [a, c] = k.split(":").map(Number);
-        const d2 = Math.abs(t - a / c);
-        if (d2 < diff) { diff = d2; best = k; }
+        const dd = Math.abs(t - a / c);
+        if (dd < diff) { diff = dd; best = k; }
       }
       return best;
     }
@@ -123,17 +123,16 @@ export default async function handler(req, res) {
 
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method === "GET") {
-    return res.status(200).json({ ok: true, v: 5, model: MODEL, time: new Date().toISOString() });
+    return res.status(200).json({ ok: true, v: 6, model: MODEL, time: new Date().toISOString() });
   }
 
   try {
     const ct = String(req.headers["content-type"] || "");
     const fields = {};
     const images = [];
-    let debug = {};
 
     if (/multipart\/form-data/i.test(ct)) {
-      let buf = Buffer.isBuffer(req.body) ? req.body : await readRaw(req);
+      const buf = Buffer.isBuffer(req.body) ? req.body : await readRaw(req);
       const bm = ct.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
       const boundary = bm ? (bm[1] || bm[2]).trim() : "";
       const parts = boundary ? parseMultipart(buf, boundary) : [];
@@ -149,7 +148,6 @@ export default async function handler(req, res) {
           fields[nm] = p.content.toString("utf8").trim();
         }
       }
-      debug = { n: parts.length, f: Object.keys(fields), i: images.length };
     } else {
       let raw = req.body;
       if (Buffer.isBuffer(raw)) raw = raw.toString("utf8");
@@ -163,7 +161,6 @@ export default async function handler(req, res) {
       }
       const one = await toPublic(typeof fields.image === "string" ? fields.image : (fields.image && fields.image.url));
       if (one) images.push(one);
-      debug = { f: Object.keys(fields), i: images.length };
     }
 
     let auth = String(req.headers.authorization || "");
@@ -173,9 +170,7 @@ export default async function handler(req, res) {
 
     let prompt = String(fields.prompt || fields.input || fields.text || fields.description || fields.caption || "").trim();
     if (!prompt) prompt = longestStr(fields, 0, "").trim();
-    if (!prompt) {
-      return res.status(400).json({ error: "还是没拿到提示词", d: debug });
-    }
+    if (!prompt) return res.status(400).json({ error: "没拿到提示词", d: { f: Object.keys(fields) } });
 
     const payload = {
       model: MODEL,
@@ -198,21 +193,35 @@ export default async function handler(req, res) {
       payload.images = images.slice(0, 5);
     }
 
-    const sub = await fetch(`${BASE}/v1/videos`, {
-      method: "POST",
-      headers: { Authorization: auth, "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
+    let subStatus = 0;
+    let subData = null;
 
-    const subText = await sub.text();
-    let subData;
-    try { subData = JSON.parse(subText); } catch { return res.status(sub.status).send(subText); }
-    if (!sub.ok) return res.status(sub.status).json({ stage: "agnes", d: subData });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const sub = await fetch(`${BASE}/v1/videos`, {
+        method: "POST",
+        headers: { Authorization: auth, "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      subStatus = sub.status;
+      const t = await sub.text();
+      try { subData = JSON.parse(t); } catch { subData = { message: t }; }
+      const blob = JSON.stringify(subData || {});
+      if (sub.ok || !/queue.?is.?full|video_queue_full/i.test(blob)) break;
+      if (attempt < 2) await new Promise(r => setTimeout(r, 4000));
+    }
+
+    if (subStatus >= 400) {
+      const msg = String((subData && (subData.message || subData.error)) || "");
+      if (/queue is full/i.test(msg)) {
+        return res.status(503).json({ error: "Agnes 排队已满，等 2-5 分钟再点一次生成就好" });
+      }
+      return res.status(subStatus).json({ stage: "agnes", d: subData });
+    }
 
     const vid = subData.video_id || subData.id || subData.task_id;
     if (!vid) return res.status(500).json({ error: "Agnes 未返回任务 ID", d: subData });
 
-    const deadline = Date.now() + 50000;
+    const deadline = Date.now() + 45000;
     let final = null;
     while (Date.now() < deadline) {
       const q = await fetch(
@@ -243,7 +252,7 @@ export default async function handler(req, res) {
       aspect_ratio: payload.aspect_ratio,
       mode: payload.mode,
       data: url ? [{ url, video_url: url }] : [],
-      detail: st === "processing" ? "生成中，稍等一下再点一次生成" : undefined
+      detail: st === "processing" ? "生成中，等 1 分钟再点一次生成" : undefined
     });
 
   } catch (err) {
