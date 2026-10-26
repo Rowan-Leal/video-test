@@ -7,7 +7,16 @@ import fetch from "node-fetch";
 const AGNES_BASE = "https://api.agnes.ai";
 
 export default async function handler(req, res) {
-  // 心跳测试
+  // CORS 设置
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+  // 处理预检请求
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
+
   if (req.method === "GET") {
     return res.status(200).json({
       ok: true,
@@ -20,17 +29,19 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const agnesKey = process.env.AGNES_API_KEY;
-  if (!agnesKey) {
-    return res.status(500).json({ error: "缺少 AGNES_API_KEY 环境变量" });
-  }
-
   try {
     const body = await req.json();
+    // 使用客户端传入的 Authorization（也就是你面板填的 Agnes key）
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader) {
+      return res.status(401).json({ error: "缺少 Authorization" });
+    }
+
     const upstream = await fetch(`${AGNES_BASE}/v1/videos/generations`, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${agnesKey}`,
+        Authorization: authHeader,
         "Content-Type": "application/json"
       },
       body: JSON.stringify(body)
@@ -46,8 +57,9 @@ export default async function handler(req, res) {
 
     res.status(upstream.status).json(data);
   } catch (err) {
+    console.error("proxy error:", err);
     res.status(500).json({
-      error: err.message || "请求失败"
+      error: err.message || "中转请求失败"
     });
   }
 }
