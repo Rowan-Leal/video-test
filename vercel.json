@@ -1,7 +1,9 @@
 {
+  "version": 2,
   "functions": {
-    "api/video.js": {
-      "maxDuration": 60
-    }
-  }
+    "api/video.js": { "maxDuration": 60 }
+  },
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/api/video" }
+  ]
 }
