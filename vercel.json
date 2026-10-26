@@ -1,11 +1,7 @@
 {
   "functions": {
-    "api/*.js": {
+    "api/video.js": {
       "maxDuration": 60
     }
-  },
-  "routes": [
-    { "src": "/v1/videos/generations", "dest": "/api/video.js" },
-    { "src": "/video", "dest": "/api/video.js" }
-  ]
+  }
 }
