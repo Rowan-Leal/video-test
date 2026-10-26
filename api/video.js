@@ -28,13 +28,13 @@ function pickRatio(b) {
       return best;
     }
   }
-  if (/竖|portrait|vertical|9:16/i.test(s)) return "9:16";
+  if (/竖|portrait|vertical/i.test(s)) return "9:16";
   if (/方|square/i.test(s)) return "1:1";
   return "16:9";
 }
 
 function pickSeconds(b) {
-  let n = Number(b.seconds ?? b.duration ?? b.duration_seconds ?? 5);
+  let n = Number(b.seconds ?? b.duration ?? b.duration_seconds ?? b.seconds_total ?? 5);
   if (!Number.isFinite(n) || n <= 0) n = 5;
   n = Math.round(n);
   if (n < 4) n = 4;
@@ -45,8 +45,20 @@ function pickSeconds(b) {
 function pickImg(x) {
   if (!x) return null;
   if (typeof x === "string") return x;
-  if (typeof x === "object") return x.url || x.image_url || x.b64_json || null;
+  if (typeof x === "object") return x.url || x.image_url || null;
   return null;
+}
+
+function longestStr(obj, depth, best) {
+  if (depth > 5 || obj == null) return best;
+  if (typeof obj === "string") {
+    const s = obj.trim();
+    if (s.length > best.length && s.length < 2000 && !/^data:/i.test(s) && !/^https?:\/\//i.test(s)) return s;
+    return best;
+  }
+  if (Array.isArray(obj)) { for (const v of obj) best = longestStr(v, depth + 1, best); return best; }
+  if (typeof obj === "object") { for (const k in obj) best = longestStr(obj[k], depth + 1, best); return best; }
+  return best;
 }
 
 async function toPublic(v) {
@@ -54,7 +66,8 @@ async function toPublic(v) {
   if (/^https?:\/\//i.test(v)) return v;
   const m = v.match(/^data:(image|audio)\/([a-zA-Z0-9+.-]+);base64,(.+)$/);
   if (!m || !SUPA_URL || !SUPA_KEY) return null;
-  const kind = m[1], subtype = m[2].split("+")[0].toLowerCase();
+  const kind = m[1];
+  const subtype = m[2].split("+")[0].toLowerCase();
   const path = `agnes/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${subtype}`;
   const up = await fetch(`${SUPA_URL}/storage/v1/object/${SUPA_BUCKET}/${path}`, {
     method: "POST",
@@ -78,22 +91,42 @@ export default async function handler(req, res) {
 
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method === "GET") {
-    return res.status(200).json({ ok: true, v: 3, model: MODEL, time: new Date().toISOString() });
+    return res.status(200).json({ ok: true, v: 4, model: MODEL, time: new Date().toISOString() });
   }
 
   try {
-    let body = req.body;
-    if (Buffer.isBuffer(body)) body = body.toString("utf8");
-    if (typeof body === "string") { try { body = JSON.parse(body); } catch { body = {}; } }
-    body = body || {};
+    let raw = req.body;
+    if (Buffer.isBuffer(raw)) raw = raw.toString("utf8");
+    const rawStr = typeof raw === "string" ? raw : JSON.stringify(raw || {});
+    let body = {};
+    if (typeof raw === "string") { try { body = JSON.parse(raw); } catch { body = {}; } }
+    else if (raw && typeof raw === "object") { body = raw; }
 
     let auth = String(req.headers.authorization || "");
     if (auth && !/^bearer\s/i.test(auth)) auth = `Bearer ${auth}`;
     if (!auth && process.env.AGNES_API_KEY) auth = `Bearer ${process.env.AGNES_API_KEY}`;
     if (!auth) return res.status(401).json({ error: "缺少 Authorization / AGNES_API_KEY" });
 
-    const prompt = String(body.prompt || body.input || body.text || "").trim();
-    if (!prompt) return res.status(400).json({ error: "缺少 prompt 提示词" });
+    let prompt = String(body.prompt || body.input || body.text || body.description || body.caption || body.query || "").trim();
+
+    if (!prompt && Array.isArray(body.messages)) {
+      const last = body.messages[body.messages.length - 1];
+      prompt = String((last && last.content) || "").trim();
+    }
+    if (!prompt) prompt = longestStr(body, 0, "").trim();
+    if (!prompt && rawStr) {
+      const m = rawStr.match(/name="(?:prompt|input|text)"\s*(?:;[^\r\n]*)?\r?\n\r?\n([\s\S]*?)\r?\n--/i);
+      if (m) prompt = m[1].trim();
+    }
+
+    if (!prompt) {
+      return res.status(400).json({
+        error: "没收到提示词，把这段截图发给开发者",
+        keys: Object.keys(body),
+        ct: String(req.headers["content-type"] || ""),
+        sample: rawStr.slice(0, 600)
+      });
+    }
 
     const payload = {
       model: MODEL,
@@ -104,8 +137,8 @@ export default async function handler(req, res) {
       seconds: pickSeconds(body)
     };
 
-    const firstFrame = await toPublic(pickImg(body.first_frame || body.firstFrame));
-    const lastFrame = await toPublic(pickImg(body.last_frame || body.lastFrame));
+    const ff = await toPublic(pickImg(body.first_frame || body.firstFrame));
+    const lf = await toPublic(pickImg(body.last_frame || body.lastFrame));
     const imgs = [];
     if (Array.isArray(body.images)) {
       for (const it of body.images.slice(0, 5)) {
@@ -115,10 +148,10 @@ export default async function handler(req, res) {
     }
     const single = await toPublic(pickImg(body.image || body.image_url));
 
-    if (firstFrame || lastFrame) {
+    if (ff || lf) {
       payload.mode = "keyframe";
-      if (firstFrame) payload.first_frame = firstFrame;
-      if (lastFrame) payload.last_frame = lastFrame;
+      if (ff) payload.first_frame = ff;
+      if (lf) payload.last_frame = lf;
     } else if (imgs.length || single) {
       payload.mode = "reference";
       payload.images = imgs.length ? imgs : [single];
@@ -152,7 +185,8 @@ export default async function handler(req, res) {
       await new Promise(r => setTimeout(r, 2000));
     }
 
-    const url = final && final.status === "completed" ? (final.url || final.video_url || "") : "";
+    const okDone = final && final.status === "completed";
+    const url = okDone ? (final.url || final.video_url || "") : "";
     const st = final ? final.status : "processing";
 
     return res.status(200).json({
@@ -168,7 +202,7 @@ export default async function handler(req, res) {
       aspect_ratio: payload.aspect_ratio,
       mode: payload.mode,
       data: url ? [{ url, video_url: url }] : [],
-      detail: st === "processing" ? "生成中，再等一会儿重新点一次" : undefined
+      detail: st === "processing" ? "生成中，稍等一下再点一次生成" : undefined
     });
 
   } catch (err) {
