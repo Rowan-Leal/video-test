@@ -1,65 +1,44 @@
-export const config = {
-  runtime: "nodejs"
-};
+export const config = { runtime: "nodejs" };
 
 import fetch from "node-fetch";
 
-const AGNES_BASE = "https://api.agnes.ai";
+const BASE = process.env.AGNES_BASE_URL || "https://apihub.agnes-ai.com/v1";
 
 export default async function handler(req, res) {
-  // CORS 设置
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "*");
+  res.setHeader("Access-Control-Expose-Headers", "*");
+  res.setHeader("Access-Control-Max-Age", "86400");
 
-  // 处理预检请求
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
-  }
+  if (req.method === "OPTIONS") return res.status(204).end();
 
   if (req.method === "GET") {
-    return res.status(200).json({
-      ok: true,
-      message: "中转服务正常",
-      time: new Date().toISOString()
-    });
-  }
-
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+    return res.status(200).json({ ok: true, message: "alive", time: new Date().toISOString() });
   }
 
   try {
-    const body = await req.json();
-    // 使用客户端传入的 Authorization（也就是你面板填的 Agnes key）
-    const authHeader = req.headers.authorization;
-
-    if (!authHeader) {
-      return res.status(401).json({ error: "缺少 Authorization" });
+    let body = req.body;
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch { body = {}; }
     }
+    body = body || {};
 
-    const upstream = await fetch(`${AGNES_BASE}/v1/videos/generations`, {
+    const auth = req.headers.authorization
+      || (process.env.AGNES_API_KEY ? `Bearer ${process.env.AGNES_API_KEY}` : "");
+
+    const upstream = await fetch(`${BASE}/videos/generations`, {
       method: "POST",
-      headers: {
-        Authorization: authHeader,
-        "Content-Type": "application/json"
-      },
+      headers: { "Content-Type": "application/json", Authorization: auth },
       body: JSON.stringify(body)
     });
 
-    const rawText = await upstream.text();
+    const text = await upstream.text();
     let data;
-    try {
-      data = JSON.parse(rawText);
-    } catch {
-      return res.status(upstream.status).send(rawText);
-    }
+    try { data = JSON.parse(text); } catch { return res.status(upstream.status).send(text); }
 
-    res.status(upstream.status).json(data);
+    return res.status(upstream.status).json(data);
   } catch (err) {
-    console.error("proxy error:", err);
-    res.status(500).json({
-      error: err.message || "中转请求失败"
-    });
+    return res.status(500).json({ error: `中转失败: ${err.message}` });
   }
 }
