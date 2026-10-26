@@ -1,5 +1,8 @@
 {
-  "engines": {
-    "node": "24.x"
+  "name": "agnes-video-proxy",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4"
   }
 }
